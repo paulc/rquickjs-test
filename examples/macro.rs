@@ -26,11 +26,11 @@ mod native_api {
     pub fn throw_ex(ctx: rquickjs::Ctx<'_>, msg: String) -> Result<String, rquickjs::Error> {
         Err(Exception::throw_message(&ctx, &msg))
     }
+}
 
-    #[rquickjs::function]
-    pub fn print(s: String) {
-        println!("{s}");
-    }
+#[rquickjs::function]
+pub fn print(s: String) {
+    println!("{s}");
 }
 
 fn main() -> Result<()> {
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     let ctx = Context::full(&rt)?;
 
     let script = r#"
-            import {print, fetch_text, zark, throw_ex} from "native_api";
+            import {fetch_text, zark, throw_ex} from "native_api";
 
             print("START");
 
@@ -57,6 +57,8 @@ fn main() -> Result<()> {
 
     let r = ctx.with::<_, Result<()>>(|ctx| {
         rquickjs::Module::declare_def::<js_native_api, _>(ctx.clone(), "native_api").unwrap();
+        ctx.globals().set("print", js_print).unwrap();
+
         let m = rquickjs::Module::declare(ctx.clone(), "script", script)
             .catch(&ctx)
             .map_err(|e| anyhow!("JS error [declare]: {}", e))?;

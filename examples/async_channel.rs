@@ -1,11 +1,5 @@
-use rquickjs::{
-    async_with, AsyncContext, AsyncRuntime, CatchResultExt, Exception, Function, Value,
-};
-use std::sync::mpsc;
-
-fn print(v: Value) {
-    println!(">> {v:?}");
-}
+use rquickjs::{async_with, AsyncContext, AsyncRuntime, Ctx, Exception, Function, Value};
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<(), rquickjs::Error> {
@@ -13,47 +7,77 @@ async fn main() -> Result<(), rquickjs::Error> {
     let ctx = AsyncContext::full(&rt).await.unwrap();
 
     async_with!(ctx => |ctx| {
-        // Create channel
-        let (tx, rx) = mpsc::channel::<String>();
+        // Create async channel
+        let (tx, _rx) = mpsc::channel::<String>(100);
 
-        // Move sender
-        let ctx_f = ctx.clone();
-        let send_fn = Function::new(ctx.clone(), move |msg: String| {
-            tx.send(msg).map_err(|e| {
-                Exception::throw_message(&ctx_f, &e.to_string())
-            })?;
-            Ok::<(),rquickjs::Error>(())
+        let send_fn = Function::new(ctx.clone(), move |ctx: Ctx, msg: String| -> Result<(), rquickjs::Error>{
+            let (promise, resolve, reject) = ctx.promise()?;
+            let tx = tx.clone();
+            ctx.spawn(async move {
+                match tx.send(msg).await {
+                    Ok(_) => {
+                        // Resolve the promise
+                        let _ = resolve.call::<_,()>(("Send OK",));
+                    }
+                    Err(_e) => {
+                        // Reject the promise
+                        let _ = reject.call::<_,()>(("Send Err",));
+                    }
+                }
+            });
+            Ok(())
         }).unwrap();
 
         /*
-        // Move receiver
-        let receive_fn = Function::new(ctx.clone(), move || -> Result<Option<String>, rquickjs::Error> {
-            match rx.try_recv() {
-                Ok(msg) => Ok(Some(msg)),
-                Err(mpsc::TryRecvError::Empty) => Ok(None),
-                Err(mpsc::TryRecvError::Disconnected) => Ok(None),
-            }
+        let rx_fn = Function::new(ctx.clone(), move |ctx: Ctx| -> Result<Promise, rquickjs::Error>{
+            let (promise, resolve, reject) = ctx.promise()?;
+            ctx.spawn(async move {
+                match rx.recv().await {
+                    Some(_) => {
+                        // Resolve the promise
+                        let mut args = Args::new(ctx,1);
+                        args.push_arg("RX OK".to_string());
+                        reject.call_arg(args);
+                    }
+                    None => {
+                        // Reject the promise
+                        let mut args = Args::new(ctx,1);
+                        args.push_arg("RX Err".to_string());
+                        reject.call_arg(args);
+                    }
+                }
+            });
+            Ok(promise)
         }).unwrap();
 
-        ctx.globals().set(
+        // Move receiver
+        let receive_fn = Function::new(ctx.clone(), move |ctx: Ctx| -> Result<String, rquickjs::Error> {
+            rx.try_recv().map_err(|e| { Exception::throw_message(&ctx, &e.to_string()) })
+            }
+        ).unwrap();
+        */
+
+
+        let global = ctx.globals();
+        global.set("send", send_fn).unwrap();
+        // global.set("recv", receive_fn).unwrap();
+        global.set(
             "print",
             Function::new(ctx.clone(), |v: Value| {
                 println!("{:?}", v);
             }),
         ).unwrap();
-        */
-
-        let global = ctx.globals();
-        global.set("send", send_fn).unwrap();
-        global.set("tryReceive", receive_fn).unwrap();
 
         // Use the functions from JavaScript
         let _res = ctx.eval::<(), _>(r#"
-            send("Hello from JS");  
-            const msg = tryReceive();  
-            if (msg) {  
-                print(`Received: ${msg}`);  
-            }  
+            print("JS")
+            // send("Hello from JS");  
+            const r = recv();
+            print(`>> RECV: ${r}`);
+            // const msg = tryReceive();  
+            // if (msg) {  
+            //     print(`Received: ${msg}`);  
+            // }  
         "#);  
 
         if let Ok(ex) = Exception::from_value(ctx.catch()) {
@@ -63,6 +87,7 @@ async fn main() -> Result<(), rquickjs::Error> {
                 ex.stack().unwrap_or("-".into())
             );
         }
+
     })
     .await;
 

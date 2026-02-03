@@ -1,9 +1,8 @@
 use anyhow::anyhow;
-use rquickjs::class::Trace;
 use rquickjs::function::{Async, Func};
 use rquickjs::{
-    async_with, ArrayBuffer, AsyncContext, AsyncRuntime, CatchResultExt, Class, Ctx, Exception,
-    JsLifetime, Module, Value,
+    async_with, AsyncContext, AsyncRuntime, CatchResultExt, Ctx, Exception,
+    Module, Value,
 };
 
 use std::io::Read;
@@ -19,50 +18,6 @@ struct CliArgs {
     script: String,
 }
 
-#[derive(Trace, JsLifetime, Clone, Debug)]
-#[rquickjs::class]
-pub struct TestClass {
-    #[qjs(get, set)]
-    pub name: String,
-    pub data: Vec<u8>,
-}
-
-#[rquickjs::methods]
-impl TestClass {
-    #[qjs(get, rename = "data")]
-    pub fn get_data<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
-        ArrayBuffer::new(ctx.clone(), self.data.clone())
-    }
-    #[qjs(get, rename = "text")]
-    pub fn get_text(&self) -> rquickjs::Result<String> {
-        Ok(String::from_utf8(self.data.clone())?)
-    }
-    #[qjs(set, rename = "text")]
-    pub fn set_text(&mut self, text: String) -> rquickjs::Result<()> {
-        self.data = text.as_bytes().to_vec();
-        Ok(())
-    }
-    pub fn format(&self) -> rquickjs::Result<String> {
-        Ok(format!("{:?}", self))
-    }
-}
-
-#[derive(Trace, JsLifetime, Clone, Debug)]
-#[rquickjs::class]
-pub enum TestEnum {
-    A(u8),
-    B(u8),
-}
-
-#[rquickjs::methods]
-impl TestEnum {
-    pub fn get_type(&self) -> rquickjs::Result<String> {
-        match self {
-            TestEnum::A(_) => Ok("A".into()),
-            TestEnum::B(_) => Ok("B".into()),
-        }
-    }
-}
 
 #[rquickjs::function]
 fn print(s: String) {
@@ -122,24 +77,13 @@ async fn main() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel::<String>();
 
-    tokio::spawn(async {
-        let mut n = 0_usize;
-        loop {
-            println!("Tick [{n}]");
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            n += 1;
-        }
-    });
-
     tokio::spawn(async move {
-        let mut n = 0_usize;
-        loop {
+        for n in 0..10 {
             match tx.send(format!("Send [{n}]")) {
                 Ok(_) => println!("Sent Message: [{n}]"),
                 Err(e) => eprintln!("Error Sending Message: {e}"),
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
-            n += 1;
         }
     });
 
@@ -148,20 +92,6 @@ async fn main() -> anyhow::Result<()> {
         ctx.globals().set("print", js_print)?;
         ctx.globals().set("print_v", js_print_v)?;
         ctx.globals().set("sleep", js_sleep)?;
-
-        let cls = Class::instance(
-            ctx.clone(),
-            TestClass {
-                name: "Test".into(),
-                data: "HELLO".as_bytes().to_vec(),
-            },
-        );
-
-        let e = TestEnum::A(99);
-
-        ctx.globals().set("t", cls)?;
-        ctx.globals().set("e", e)?;
-
 
         // With oneshot need to wrap tx to make sure closure is Fn vs FnOnce (send consumes tx)
         let resolve_tx = std::sync::Mutex::new(Some(resolve_tx));

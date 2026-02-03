@@ -57,23 +57,6 @@ async fn main() -> anyhow::Result<()> {
     let rt = AsyncRuntime::new()?;
     let ctx = AsyncContext::full(&rt).await?;
 
-    /*
-    let script = r#"
-                const o = { a:1, b:[1,2,3], c:false };
-                print("start sync");
-                print_v(e.get_type());
-                print_v(t.data.byteLength);
-                print_v(t.text);
-                const v = new Int8Array(t.data);
-                print_v(v);
-                t.text = "CHANGED";
-                print(t.format());
-                sleep(1).then(() => resolve("RESOLVED"));
-                print("end sync");
-                export const result = "DONE";
-            "#;
-    */
-
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel::<String>();
 

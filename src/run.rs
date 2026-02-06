@@ -1,12 +1,80 @@
-use std::io::Write;
+use std::io::{Read, Write};
+
+use anyhow::anyhow;
+use rquickjs::{CatchResultExt, Ctx, Module, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-pub async fn repl(ctx: rquickjs::Ctx<'_>) -> anyhow::Result<()> {
+/// Expand script arg to handle literal script, @file or stdin (-)
+pub fn get_script(script: &str) -> anyhow::Result<String> {
+    Ok(if script == "-" {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s)?;
+        s
+    } else if script.starts_with("@") {
+        std::fs::read_to_string(&script[1..])?
+    } else {
+        script.to_string()
+    })
+}
+
+/// Run as script
+pub async fn run_script<'js>(ctx: Ctx<'js>, script: String) -> anyhow::Result<Value<'js>> {
+    match ctx.eval::<rquickjs::Value, _>(script) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if let Ok(ex) = rquickjs::Exception::from_value(ctx.catch()) {
+                Err(anyhow!(
+                    "{}\n{}",
+                    ex.message().unwrap_or("-".into()),
+                    ex.stack().unwrap_or("-".into())
+                ))
+            } else {
+                Err(anyhow!("JS Error: {e}"))
+            }
+        }
+    }
+}
+
+/// Run as module
+pub async fn run_module(ctx: Ctx<'_>, module: String) -> anyhow::Result<()> {
+    // Declare module
+    let module = Module::declare(ctx.clone(), "main.mjs", module)
+        .catch(&ctx)
+        .map_err(|e| anyhow!("JS error [declare]: {}", e))?;
+
+    // Evaluate module
+    let (_module, promise) = module
+        .eval()
+        .catch(&ctx)
+        .map_err(|e| anyhow!("JS error [eval]: {}", e))?;
+
+    // Complete promise as future
+    promise
+        .into_future::<()>()
+        .await
+        .catch(&ctx)
+        .map_err(|e| anyhow!("JS error [await]: {}", e))?;
+
+    Ok(())
+}
+
+/// REPL
+pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     loop {
         let script = read_multiline_input(&mut reader).await?;
         if !script.is_empty() {
+            match run_script(ctx.clone(), script).await {
+                Ok(v) => {
+                    if !v.is_undefined() {
+                        println!("=== {:?}", v);
+                        ctx.globals().set("_", v.clone())?;
+                    }
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+            /*
             match ctx.eval::<rquickjs::Value, _>(script) {
                 Ok(v) => {
                     if !v.is_undefined() {
@@ -26,6 +94,7 @@ pub async fn repl(ctx: rquickjs::Ctx<'_>) -> anyhow::Result<()> {
                     }
                 }
             }
+            */
         }
     }
 }
@@ -64,7 +133,7 @@ fn needs_more_input(input: &str) -> bool {
                 balance -= 1;
                 if balance < 0 {
                     return false;
-                } // Syntax error, but let Rhai handle it
+                } // Syntax error
             }
             '"' | '\'' => {
                 // Skip string literals

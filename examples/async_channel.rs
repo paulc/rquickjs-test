@@ -88,8 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Make sure rx is Copy (Fn vs FnOnce)
         let rx = std::sync::Arc::new(std::sync::Mutex::new(rx)); 
-        ctx.globals().set("msg_rx", Func::new(Async({
-            let rx = rx.clone();
+        ctx.globals().set("msg_rx", Func::new(Async(
             move |ctx| { // Pass closure to JS engine
                 let rx = rx.clone();
                 async move { // Returns future when called
@@ -102,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-        })))?;
+        )))?;
 
         // Declare module
         let module = Module::declare(ctx.clone(), "main.mjs", script)

@@ -1,10 +1,43 @@
 use rquickjs::{
+    function::Rest,
     function::{Async, Func},
-    Ctx, Exception, Object, Value,
+    Ctx, Exception, Function, Object, Value,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::time::Duration;
+
+/// Register TX channel
+pub fn register_oneshot<'js, T>(
+    ctx: Ctx<'js>,
+    tx: oneshot::Sender<T>,
+    f: &str,
+) -> anyhow::Result<()>
+where
+    T: rquickjs::IntoJs<'js> + rquickjs::FromJs<'js> + Clone + Send + 'static,
+{
+    let tx = Arc::new(Mutex::new(Some(tx)));
+    ctx.globals().set(
+        f,
+        Func::new(move |ctx, msg: T| match tx.lock() {
+            Ok(mut guard) => match guard.take() {
+                Some(tx) => match tx.send(msg) {
+                    Ok(_) => Ok::<(), rquickjs::Error>(()),
+                    Err(_) => Err::<(), rquickjs::Error>(Exception::throw_message(
+                        &ctx,
+                        "TX Channel Closed",
+                    )),
+                },
+                None => {
+                    Err::<(), rquickjs::Error>(Exception::throw_message(&ctx, "Already Resolved"))
+                }
+            },
+            Err(_) => Err::<(), rquickjs::Error>(Exception::throw_message(&ctx, "Mutex Error")),
+        }),
+    )?;
+    Ok(())
+}
 
 /// Register TX channel
 pub fn register_tx_channel<'js, T>(
@@ -75,7 +108,8 @@ where
 pub fn register_fns(ctx: &Ctx<'_>) -> anyhow::Result<()> {
     ctx.globals().set("__print", js_print)?;
     ctx.globals().set("__print_v", js_print_v)?;
-    ctx.globals().set("sleep", js_sleep)?;
+    ctx.globals().set("__sleep", js_sleep)?;
+    ctx.globals().set("setTimeout", js_set_timeout)?;
     // Add console.log function
     let console = Object::new(ctx.clone())?;
     console.set("log", js_log)?;
@@ -92,7 +126,7 @@ fn print(s: String) {
 }
 
 #[rquickjs::function]
-fn print_v<'js>(ctx: Ctx<'js>, v: Value<'js>) -> rquickjs::Result<()> {
+pub fn print_v<'js>(ctx: Ctx<'js>, v: Value<'js>) -> rquickjs::Result<()> {
     let output = ctx
         .json_stringify(v)?
         .and_then(|s| s.as_string().map(|s| s.to_string().ok()).flatten())
@@ -103,7 +137,7 @@ fn print_v<'js>(ctx: Ctx<'js>, v: Value<'js>) -> rquickjs::Result<()> {
 
 /// console.log
 #[rquickjs::function]
-fn log<'js>(ctx: Ctx<'js>, args: rquickjs::function::Rest<Value<'js>>) -> rquickjs::Result<()> {
+fn log<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> rquickjs::Result<()> {
     println!(
         "{}",
         args.iter()
@@ -123,4 +157,17 @@ fn log<'js>(ctx: Ctx<'js>, args: rquickjs::function::Rest<Value<'js>>) -> rquick
 async fn sleep(n: u64) -> rquickjs::Result<()> {
     tokio::time::sleep(Duration::from_secs(n)).await;
     Ok(())
+}
+
+#[rquickjs::function]
+async fn set_timeout<'js>(
+    ctx: Ctx<'js>,
+    n: u64,
+    f: Function<'js>,
+    args: Rest<Value<'js>>,
+) -> rquickjs::Result<()> {
+    tokio::time::sleep(Duration::from_secs(n)).await;
+    let mut arg = rquickjs::function::Args::new(ctx.clone(), args.len());
+    arg.push_args(args.iter())?;
+    f.call_arg(arg)
 }

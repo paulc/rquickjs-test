@@ -4,6 +4,8 @@ use anyhow::anyhow;
 use rquickjs::{CatchResultExt, Ctx, Module, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::util::print_v;
+
 /// Expand script arg to handle literal script, @file or stdin (-)
 pub fn get_script(script: &str) -> anyhow::Result<String> {
     Ok(if script == "-" {
@@ -68,33 +70,12 @@ pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
             match run_script(ctx.clone(), script).await {
                 Ok(v) => {
                     if !v.is_undefined() {
-                        println!("=== {:?}", v);
                         ctx.globals().set("_", v.clone())?;
+                        let _ = print_v(ctx.clone(), v);
                     }
                 }
                 Err(e) => eprintln!("{e}"),
             }
-            /*
-            match ctx.eval::<rquickjs::Value, _>(script) {
-                Ok(v) => {
-                    if !v.is_undefined() {
-                        println!("=== {:?}", v);
-                        ctx.globals().set("_", v.clone())?;
-                    }
-                }
-                Err(e) => {
-                    if let Ok(ex) = rquickjs::Exception::from_value(ctx.catch()) {
-                        eprintln!(
-                            "{}\n{}",
-                            ex.message().unwrap_or("-".into()),
-                            ex.stack().unwrap_or("-".into())
-                        );
-                    } else {
-                        eprintln!("JS Error: {e}");
-                    }
-                }
-            }
-            */
         }
     }
 }

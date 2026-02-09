@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use anyhow::anyhow;
-use rquickjs::{CatchResultExt, Ctx, Module, Value};
+use rquickjs::{prelude::IntoArgs, CatchResultExt, Ctx, Module, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::util::print_v;
@@ -77,6 +77,81 @@ pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
                 Err(e) => eprintln!("{e}"),
             }
         }
+    }
+}
+
+/// REPL
+use rustyline::{error::ReadlineError, DefaultEditor};
+
+const PROMPT: &str = ">>> ";
+const MULTILINE_PROMPT: &str = "... ";
+
+pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
+    let mut rl = DefaultEditor::new()?;
+    let mut lines = Vec::new();
+    let mut prompt = PROMPT;
+    loop {
+        match rl.readline(prompt) {
+            Ok(line) => {
+                lines.push(line.to_string());
+                let script = lines.join("\n");
+                // Check if we need more input (unmatched braces/parens)
+                if needs_more_input(&script) {
+                    prompt = MULTILINE_PROMPT;
+                } else {
+                    if !script.is_empty() {
+                        rl.add_history_entry(script.as_str())?;
+                        match run_script(ctx.clone(), script).await {
+                            Ok(v) => {
+                                if !v.is_undefined() {
+                                    ctx.globals().set("_", v.clone())?;
+                                    let _ = print_v(ctx.clone(), v);
+                                }
+                            }
+                            Err(e) => eprintln!("{e}"),
+                        }
+                        lines.clear();
+                    }
+                    prompt = PROMPT;
+                };
+            }
+            Err(ReadlineError::Interrupted) => {
+                eprintln!("CTRL-C");
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                eprintln!("CTRL-D");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Call JS fn
+pub async fn call_fn<'js, A>(ctx: Ctx<'js>, fname: &str, args: A) -> anyhow::Result<Value<'js>>
+where
+    A: IntoArgs<'js>,
+{
+    match ctx.globals().get::<_, rquickjs::Value>(fname) {
+        Ok(f) => {
+            if f.is_function() {
+                Ok(f.as_function()
+                    .ok_or(anyhow::anyhow!("Error: as_function()"))?
+                    .call::<A, rquickjs::Value>(args)?)
+            } else if f.is_constructor() {
+                Ok(f.as_constructor()
+                    .ok_or(anyhow::anyhow!("Error: as_function()"))?
+                    .call::<A, rquickjs::Value>(args)?)
+            } else {
+                Err(anyhow::anyhow!("{fname}: invalid type [{}]", f.type_of()))
+            }
+        }
+        Err(e) => Err(anyhow::anyhow!("{fname} not found: {e}")),
     }
 }
 

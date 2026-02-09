@@ -1,9 +1,10 @@
 use argh::FromArgs;
 
 use rquickjs::{async_with, AsyncContext, AsyncRuntime, Class, Module};
-use rquickjs_test::run::{get_script, repl, run_module, run_script};
+use rquickjs_test::run::{call_fn, get_script, repl_rustyline, run_module, run_script};
 use rquickjs_test::util::{
-    register_fns, register_oneshot, register_rx_channel, register_tx_channel,
+    json_to_value, register_fns, register_oneshot, register_rx_channel, register_tx_channel,
+    value_to_json,
 };
 
 #[derive(FromArgs)]
@@ -11,15 +12,30 @@ use rquickjs_test::util::{
 struct CliArgs {
     #[argh(option)]
     /// QJS script
-    script: Option<String>,
+    script: Vec<String>,
     #[argh(option)]
     /// QJS module
-    module: Option<String>,
+    module: Vec<String>,
+    #[argh(switch)]
+    /// JS REPL
+    repl: bool,
+    #[argh(option)]
+    /// call JS
+    call: Vec<String>,
+    #[argh(option)]
+    /// call args
+    arg: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: CliArgs = argh::from_env();
+
+    // Check that we have something to do
+    if args.script.is_empty() && args.module.is_empty() && args.call.is_empty() && !args.repl {
+        let name = std::env::args().next().unwrap_or("-".into());
+        CliArgs::from_args(&[&name], &["--help"]).map_err(|exit| anyhow::anyhow!(exit.output))?;
+    }
 
     let rt = AsyncRuntime::new()?;
     let ctx = AsyncContext::full(&rt).await?;
@@ -66,12 +82,30 @@ async fn main() -> anyhow::Result<()> {
         let (_, p) = Module::evaluate_def::<js_test_mod,_>(ctx.clone(),"stuff")?;
         p.into_future::<()>().await?; // Ensure module evaluated
 
-        match args {
-            CliArgs { script: _, module: Some(module) } => { run_module(ctx,get_script(&module)?).await?; }
-            CliArgs { script: Some(script), module: _ } => { run_script(ctx,get_script(&script)?).await?; }
-            CliArgs { script: None, module: None } => { repl(ctx).await?; }
+        // Run modules
+        for module in args.module {
+            run_module(ctx.clone(),get_script(&module)?).await?;
         }
 
+        // Run scripts
+        for script in args.script {
+            run_script(ctx.clone(),get_script(&script)?).await?;
+        }
+
+        // Run REPL
+        if args.repl {
+            repl_rustyline(ctx.clone()).await?;
+        }
+
+        // Call JS
+        for (f,a) in args.call.iter().zip(args.arg.iter().chain(std::iter::repeat(&("".to_string())))) {
+            let r = if a.is_empty() {
+                call_fn(ctx.clone(),&f,((),)).await?
+            } else {
+                call_fn(ctx.clone(),&f,(json_to_value(ctx.clone(),a)?,)).await?
+            };
+            println!(">> [CALL] {f} ({a}) => {}", value_to_json(ctx.clone(),r)?);
+        }
         Ok::<(),anyhow::Error>(())
     })
     .await?;

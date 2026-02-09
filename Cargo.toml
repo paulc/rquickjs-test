@@ -8,6 +8,6 @@ anyhow = "1.0.100"
 argh = "0.1.13"
 reqwest = { version = "0.13.1", features = ["blocking"] }
 rquickjs = { version = "0.11.0", features = ["futures", "macro", "loader", "dyn-load", "rust-alloc"] }
-rquickjs-serde = "0.4.0"
+rustyline = "17.0.2"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.49.0", default-features = false, features = ["io-std", "macros", "rt-multi-thread"] }

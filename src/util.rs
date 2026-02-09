@@ -109,6 +109,7 @@ pub fn register_fns(ctx: &Ctx<'_>) -> anyhow::Result<()> {
     ctx.globals().set("__print", js_print)?;
     ctx.globals().set("__print_v", js_print_v)?;
     ctx.globals().set("__sleep", js_sleep)?;
+    ctx.globals().set("__globals", js_globals)?;
     ctx.globals().set("setTimeout", js_set_timeout)?;
     // Add console.log function
     let console = Object::new(ctx.clone())?;
@@ -125,6 +126,36 @@ fn print(s: String) {
     println!("{}", s);
 }
 
+/// Convert Value to JSON String
+pub fn value_to_json<'js>(ctx: Ctx<'js>, v: Value<'js>) -> anyhow::Result<String> {
+    if v.is_undefined() {
+        Ok("null".into())
+    } else {
+        ctx.json_stringify(v)?
+            .and_then(|s| s.as_string().map(|s| s.to_string().ok()).flatten())
+            .ok_or(anyhow::anyhow!("JSON Error"))
+    }
+}
+
+/// Convert JSON String to Value
+pub fn json_to_value<'js>(ctx: Ctx<'js>, json: &str) -> anyhow::Result<Value<'js>> {
+    match ctx.json_parse(json.as_bytes()) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if let Ok(ex) = rquickjs::Exception::from_value(ctx.catch()) {
+                Err(anyhow::anyhow!(
+                    "JSON Error: {}\n{}",
+                    ex.message().unwrap_or("-".into()),
+                    ex.stack().unwrap_or("-".into())
+                ))
+            } else {
+                Err(anyhow::anyhow!("JSON Error: {e}"))
+            }
+        }
+    }
+}
+
+/// Print JS Value as JSON
 #[rquickjs::function]
 pub fn print_v<'js>(ctx: Ctx<'js>, v: Value<'js>) -> rquickjs::Result<()> {
     let output = ctx
@@ -132,6 +163,16 @@ pub fn print_v<'js>(ctx: Ctx<'js>, v: Value<'js>) -> rquickjs::Result<()> {
         .and_then(|s| s.as_string().map(|s| s.to_string().ok()).flatten())
         .unwrap_or_else(|| "<ERR>".to_string());
     println!("{}", output);
+    Ok(())
+}
+
+/// Print globals
+#[rquickjs::function]
+fn globals<'js>(ctx: Ctx<'js>) -> rquickjs::Result<()> {
+    let mut i = ctx.globals().props::<String, rquickjs::Value>();
+    while let Some(Ok((k, v))) = i.next() {
+        println!("{} v = {:?}", k, v);
+    }
     Ok(())
 }
 

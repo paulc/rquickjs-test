@@ -8,6 +8,12 @@ anyhow = "1.0.100"
 argh = "0.1.13"
 reqwest = { version = "0.13.1", features = ["blocking"] }
 rquickjs = { version = "0.11.0", features = ["futures", "macro", "loader", "dyn-load", "rust-alloc"] }
-rustyline = "17.0.2"
+rustyline = { version = "17.0.2", optional = true }
+rustyline-async = { version = "0.4.7", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.49.0", default-features = false, features = ["io-std", "macros", "rt-multi-thread"] }
+
+[features]
+default = ["repl_rustyline"]
+repl_rustyline = ["rustyline"]
+repl_rustyline_async = ["rustyline-async"]

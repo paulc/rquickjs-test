@@ -81,12 +81,69 @@ pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
 }
 
 /// REPL
-use rustyline::{error::ReadlineError, DefaultEditor};
-
 const PROMPT: &str = ">>> ";
 const MULTILINE_PROMPT: &str = "... ";
 
+#[cfg(feature = "repl_rustyline_async")]
 pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
+    use crate::util::value_to_json;
+    use rustyline_async::{Readline, ReadlineEvent};
+
+    let (mut rl, mut stdout) = Readline::new(PROMPT.into())?;
+    let mut lines = Vec::new();
+    loop {
+        tokio::select! {
+            cmd = rl.readline() => match cmd {
+                Ok(ReadlineEvent::Line(line)) => {
+                    lines.push(line.trim_end().to_string());
+                    let script = lines.join(" ");
+                    // Check if we need more input (unmatched braces/parens)
+                    if needs_more_input(&script) {
+                        rl.update_prompt(MULTILINE_PROMPT)?;
+                    } else {
+                        if !script.is_empty() {
+                            rl.add_history_entry(script.clone());
+                            match run_script(ctx.clone(), script).await {
+                                Ok(v) => {
+                                    if !v.is_undefined() {
+                                        ctx.globals().set("_", v.clone())?;
+                                        writeln!(stdout, "{}", value_to_json(ctx.clone(),v)?)?;
+                                    }
+                                }
+                                Err(e) => {
+                                    writeln!(stdout,"JS Error: {e}")?;
+                                }
+                            }
+                            lines.clear();
+                        }
+                        rl.update_prompt(PROMPT)?;
+                    };
+                }
+                Ok(ReadlineEvent::Eof) => {
+                    writeln!(stdout, "<CTRL-D>")?;
+                    break;
+                }
+                Ok(ReadlineEvent::Interrupted) => {
+                    writeln!(stdout, "<CTRL-C>")?;
+                    break;
+                }
+                Err(e) => {
+                    writeln!(stdout, "Error: {e}")?;
+                    break;
+
+                }
+
+            }
+        }
+    }
+    rl.flush()?;
+    Ok(())
+}
+
+#[cfg(feature = "repl_rustyline")]
+pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
+    use rustyline::{error::ReadlineError, DefaultEditor};
+
     let mut rl = DefaultEditor::new()?;
     let mut lines = Vec::new();
     let mut prompt = PROMPT;
@@ -133,26 +190,33 @@ pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
 }
 
 /// Call JS fn
-pub async fn call_fn<'js, A>(ctx: Ctx<'js>, fname: &str, args: A) -> anyhow::Result<Value<'js>>
+pub async fn call_fn_old<'js, A>(ctx: Ctx<'js>, fname: &str, args: A) -> anyhow::Result<Value<'js>>
 where
     A: IntoArgs<'js>,
 {
     match ctx.globals().get::<_, rquickjs::Value>(fname) {
-        Ok(f) => {
-            if f.is_function() {
-                Ok(f.as_function()
-                    .ok_or(anyhow::anyhow!("Error: as_function()"))?
-                    .call::<A, rquickjs::Value>(args)?)
-            } else if f.is_constructor() {
-                Ok(f.as_constructor()
-                    .ok_or(anyhow::anyhow!("Error: as_function()"))?
-                    .call::<A, rquickjs::Value>(args)?)
-            } else {
-                Err(anyhow::anyhow!("{fname}: invalid type [{}]", f.type_of()))
-            }
-        }
-        Err(e) => Err(anyhow::anyhow!("{fname} not found: {e}")),
+        Ok(f) => Ok(f
+            .as_function()
+            .ok_or(anyhow::anyhow!("{fname} not a function"))?
+            .call::<A, rquickjs::Value>(args)?),
+        Err(e) => Err(anyhow::anyhow!("{fname} error: {e}")),
     }
+}
+
+pub async fn call_fn<'js, A>(ctx: Ctx<'js>, path: &str, args: A) -> anyhow::Result<Value<'js>>
+where
+    A: IntoArgs<'js>,
+{
+    let mut obj = ctx.globals();
+    for p in path.split(".") {
+        obj = obj
+            .get::<_, rquickjs::Object>(p)
+            .map_err(|e| anyhow::anyhow!("Invalid Path: {p} [{e}]"))?;
+    }
+    Ok(obj
+        .as_function()
+        .ok_or(anyhow::anyhow!("{path} not a function"))?
+        .call::<A, rquickjs::Value>(args)?)
 }
 
 async fn read_multiline_input(reader: &mut BufReader<tokio::io::Stdin>) -> anyhow::Result<String> {

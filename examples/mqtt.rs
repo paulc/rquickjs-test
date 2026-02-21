@@ -1,9 +1,8 @@
 use anyhow::anyhow;
 use argh::FromArgs;
-use rquickjs::function::Func;
 use rquickjs::{
-    async_with, class::Trace, ArrayBuffer, AsyncContext, AsyncRuntime, CatchResultExt, Class, Ctx,
-    Exception, JsLifetime, Module, Value,
+    async_with, class::Trace, function::Func, ArrayBuffer, AsyncContext, AsyncRuntime,
+    CatchResultExt, Class, Ctx, Exception, JsLifetime, Module, Value,
 };
 use serde::{Deserialize, Serialize};
 

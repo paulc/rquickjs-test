@@ -110,13 +110,13 @@ pub fn register_fns(ctx: &Ctx<'_>) -> anyhow::Result<()> {
     ctx.globals().set("__print_v", js_print_v)?;
     ctx.globals().set("__sleep", js_sleep)?;
     ctx.globals().set("__globals", js_globals)?;
+    ctx.globals().set("__to_buffer", js_to_buffer)?;
+    ctx.globals().set("__to_utf8", js_to_utf8)?;
     ctx.globals().set("setTimeout", js_set_timeout)?;
     // Add console.log function
     let console = Object::new(ctx.clone())?;
     console.set("log", js_log)?;
-    ctx.globals()
-        .get::<_, Object>("globalThis")?
-        .set("console", console)?;
+    ctx.globals().set("console", console)?;
     Ok(())
 }
 
@@ -176,6 +176,25 @@ fn globals<'js>(ctx: Ctx<'js>) -> rquickjs::Result<()> {
     Ok(())
 }
 
+/// String to ArrayBuffer
+#[rquickjs::function]
+fn to_buffer<'js>(ctx: Ctx<'js>, s: String) -> rquickjs::Result<rquickjs::ArrayBuffer<'js>> {
+    rquickjs::ArrayBuffer::new_copy(ctx.clone(), s.as_bytes())
+}
+
+/// ArrayBuffer to UTF8
+#[rquickjs::function]
+fn to_utf8<'js>(ctx: Ctx<'js>, a: rquickjs::ArrayBuffer<'js>) -> rquickjs::Result<String> {
+    let bytes = a
+        .as_bytes()
+        .ok_or(rquickjs::Exception::throw_message(
+            &ctx,
+            "Invalid ArrayBuffer",
+        ))?
+        .to_vec();
+    Ok(String::from_utf8(bytes)?)
+}
+
 /// console.log
 #[rquickjs::function]
 fn log<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> rquickjs::Result<()> {
@@ -203,8 +222,8 @@ async fn sleep(n: u64) -> rquickjs::Result<()> {
 #[rquickjs::function]
 async fn set_timeout<'js>(
     ctx: Ctx<'js>,
-    n: u64,
     f: Function<'js>,
+    n: u64,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<()> {
     tokio::time::sleep(Duration::from_secs(n)).await;

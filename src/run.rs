@@ -60,7 +60,7 @@ pub async fn run_module(ctx: Ctx<'_>, module: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// REPL
+/// Basic REPL (no line editing)
 pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -84,125 +84,78 @@ pub async fn repl(ctx: Ctx<'_>) -> anyhow::Result<()> {
 const PROMPT: &str = ">>> ";
 const MULTILINE_PROMPT: &str = "... ";
 
-#[cfg(feature = "repl_rustyline_async")]
-pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
-    use crate::util::value_to_json;
-    use rustyline_async::{Readline, ReadlineEvent};
+pub async fn repl_rl(ctx: Ctx<'_>) -> anyhow::Result<()> {
+    use rustyline::{error::ReadlineError, DefaultEditor};
 
-    let (mut rl, mut stdout) = Readline::new(PROMPT.into())?;
-    let mut lines = Vec::new();
-    loop {
-        tokio::select! {
-            cmd = rl.readline() => match cmd {
-                Ok(ReadlineEvent::Line(line)) => {
-                    lines.push(line.trim_end().to_string());
-                    let script = lines.join(" ");
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<String>(16);
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<()>(16);
+
+    // Spawn blocking task
+    let input_handle = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut rl = DefaultEditor::new()?;
+        let mut lines = Vec::new();
+        let mut prompt = PROMPT;
+        loop {
+            match rl.readline(prompt) {
+                Ok(line) => {
+                    lines.push(line.to_string());
+                    let cmd = lines.join("\n");
                     // Check if we need more input (unmatched braces/parens)
-                    if needs_more_input(&script) {
-                        rl.update_prompt(MULTILINE_PROMPT)?;
+                    if needs_more_input(&cmd) {
+                        prompt = MULTILINE_PROMPT;
                     } else {
-                        if !script.is_empty() {
-                            rl.add_history_entry(script.clone());
-                            match run_script(ctx.clone(), script).await {
-                                Ok(v) => {
-                                    if !v.is_undefined() {
-                                        ctx.globals().set("_", v.clone())?;
-                                        writeln!(stdout, "{}", value_to_json(ctx.clone(),v)?)?;
-                                    }
-                                }
-                                Err(e) => {
-                                    writeln!(stdout,"JS Error: {e}")?;
-                                }
-                            }
-                            lines.clear();
+                        if !cmd.is_empty() {
+                            rl.add_history_entry(cmd.as_str())?;
                         }
-                        rl.update_prompt(PROMPT)?;
+                        if cmd_tx.blocking_send(cmd).is_err() {
+                            // Channel closed
+                            break;
+                        }
+                        // Wait for reply
+                        if reply_rx.blocking_recv().is_none() {
+                            // Channel closed
+                            break;
+                        }
+                        lines.clear();
+                        prompt = PROMPT;
                     };
                 }
-                Ok(ReadlineEvent::Eof) => {
-                    writeln!(stdout, "<CTRL-D>")?;
+                Err(ReadlineError::Interrupted) => {
+                    eprintln!("<CTRL-C>");
                     break;
                 }
-                Ok(ReadlineEvent::Interrupted) => {
-                    writeln!(stdout, "<CTRL-C>")?;
+                Err(ReadlineError::Eof) => {
+                    eprintln!("<CTRL-D>");
                     break;
                 }
                 Err(e) => {
-                    writeln!(stdout, "Error: {e}")?;
+                    eprintln!("[-] Readline Error: {:?}", e);
                     break;
-
                 }
-
             }
         }
-    }
-    rl.flush()?;
-    Ok(())
-}
+        Ok(())
+    });
 
-#[cfg(feature = "repl_rustyline")]
-pub async fn repl_rustyline(ctx: Ctx<'_>) -> anyhow::Result<()> {
-    use rustyline::{error::ReadlineError, DefaultEditor};
-
-    let mut rl = DefaultEditor::new()?;
-    let mut lines = Vec::new();
-    let mut prompt = PROMPT;
-    loop {
-        match rl.readline(prompt) {
-            Ok(line) => {
-                lines.push(line.to_string());
-                let script = lines.join("\n");
-                // Check if we need more input (unmatched braces/parens)
-                if needs_more_input(&script) {
-                    prompt = MULTILINE_PROMPT;
-                } else {
-                    if !script.is_empty() {
-                        rl.add_history_entry(script.as_str())?;
-                        match run_script(ctx.clone(), script).await {
-                            Ok(v) => {
-                                if !v.is_undefined() {
-                                    ctx.globals().set("_", v.clone())?;
-                                    let _ = print_v(ctx.clone(), v);
-                                }
-                            }
-                            Err(e) => eprintln!("{e}"),
-                        }
-                        lines.clear();
-                    }
-                    prompt = PROMPT;
-                };
+    // Get input cmd
+    while let Some(cmd) = cmd_rx.recv().await {
+        match run_script(ctx.clone(), cmd).await {
+            Ok(v) => {
+                if !v.is_undefined() {
+                    ctx.globals().set("_", v.clone())?;
+                    let _ = print_v(ctx.clone(), v);
+                }
             }
-            Err(ReadlineError::Interrupted) => {
-                eprintln!("CTRL-C");
-                break;
-            }
-            Err(ReadlineError::Eof) => {
-                eprintln!("CTRL-D");
-                break;
-            }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-                break;
-            }
+            Err(e) => eprintln!("[-] Command Channel: {e}"),
         }
+        reply_tx.send(()).await?;
     }
+
+    let _ = input_handle.await?;
     Ok(())
 }
 
 /// Call JS fn
-pub async fn call_fn_old<'js, A>(ctx: Ctx<'js>, fname: &str, args: A) -> anyhow::Result<Value<'js>>
-where
-    A: IntoArgs<'js>,
-{
-    match ctx.globals().get::<_, rquickjs::Value>(fname) {
-        Ok(f) => Ok(f
-            .as_function()
-            .ok_or(anyhow::anyhow!("{fname} not a function"))?
-            .call::<A, rquickjs::Value>(args)?),
-        Err(e) => Err(anyhow::anyhow!("{fname} error: {e}")),
-    }
-}
-
 pub async fn call_fn<'js, A>(ctx: Ctx<'js>, path: &str, args: A) -> anyhow::Result<Value<'js>>
 where
     A: IntoArgs<'js>,
